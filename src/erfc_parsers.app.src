@@ -1,0 +1,8 @@
+%% -*- mode: Erlang; fill-column: 75; comment-column: 50; -*-
+
+{application, erfc_parsers,
+ [{description, "A set of RFC parsers for Erlang"},
+  {vsn, "0.0.1"},
+  {modules, []},
+  {registered, []},
+  {applications, [kernel, stdlib]}]}.
