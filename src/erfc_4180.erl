@@ -1,43 +1,18 @@
-%%% This code as been 'forked' from the website
-%%% http://ppolv.wordpress.com/2008/02/25/parsing-csv-in-erlang/
-%%% Original code by: pplov
-%%% Additional code by Gerald Gutierrez and Luke Krasnoff
+%% -*- mode: Erlang; fill-column: 80; comment-column: 75; -*-
+%%%---------------------------------------------------------------------------
+%%% @author ppolv (http://pplov.wordpress.com)
+%%% @author Gordon Guthrie
+%%% @author Gerald Gutierrez
+%%% @author Luke Krasnoff
+%%%
+%%% @doc This file implements rfc 4180 - the format used for
+%%%  Comma-Separated Values (CSV) files and registers the associated
+%%%  MIME type "text/csv".
+%%% @end
+%%%-------------------------------------------------------------------
 
-%%% This code is 'public domain' (see original website)
+-module(erfc_4180).
 
-%% —
-%% Parse csv formated data (RFC-4180) in Erlang
-%% —
-
-%% Sez me by e-mail
-%% ----------------
-
-%% Gordon Guthrie to luke.krasnoff
-%% 8 Mar
-%% Hey Luke
-
-%% I wonder if you could e-mail me a copy of your CVS parsing code:
-%% http://ppolv.wordpress.com/2008/02/25/parsing-csv-in-erlang/
-
-%% It is a useful bit of code. Have you thought of throwing up on
-%% github/would you mind if we did?
-
-%% Cheers
-
-%% Gordon
-
-%% Sez Luke back
-%% -------------
-
-%% Hi Gordon,
-
-%% By all means put it on github.
-
-%% Cheers,
-%% Luke
-
--module(parse_csv).
--import(lists, [reverse/1]).
 -export([parse_file/3,parse_file/1,parse/3,parse/1]).
 
 -record(ecsv,{
@@ -148,7 +123,7 @@ new_record(S=#ecsv{cols=Cols,current_field=Field,current_record=Record,fold_stat
             NewState = Fun(State,NewRecord),
             S#ecsv{state=field_start,cols=tuple_size(NewRecord),
                    current_record=[],current_field=[],fold_state=NewState};
-        
+
         (tuple_size(NewRecord) =/= Cols) ->
             throw({ecsv_exception,bad_record_size})
     end.
@@ -156,6 +131,7 @@ new_record(S=#ecsv{cols=Cols,current_field=Field,current_record=Record,fold_stat
 %% ——– Regression tests ————————
 %% From the erl interpreter run csv:test() to run regression tests.
 %% See eunit for more information.
+-ifndef(NOTEST).
 -include_lib("eunit/include/eunit.hrl").
 
 csv_test_() ->
@@ -187,7 +163,7 @@ csv_test_() ->
                    parse(<<"\"1A\",\"1\nB\"">>)),
      % Quoted element with embedded quotes (1)
      ?_assertEqual([{"1A","\"B"}],
-                   parse(<<"\"1A\",","\"\"B\"">>)), 
+                   parse(<<"\"1A\",","\"\"B\"">>)),
      % Quoted element with embedded quotes (2)
      ?_assertEqual([{"1A","blah\"B"}],
                    parse(<<"\"1A\",\"blah\"",$","B\"">>)), %"
@@ -198,3 +174,5 @@ csv_test_() ->
      ?_assertThrow({ecsv_exception,bad_record_size},
                    parse(<<"1A,1B,1C\n2A,2B\n">>))
     ].
+
+-endif.
