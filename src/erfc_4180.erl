@@ -20,6 +20,8 @@
           cols = undefined,    % how many fields per record
           current_field  = [],
           current_record = [],
+          lines=0,
+          columns=0,
           fold_state,
           fold_fun             % user supplied fold function
          }).
@@ -42,37 +44,42 @@ parse(Binary,InitialState,Fun) ->
 
 %% ——— Field_start state ———————
 %%whitespace, loop in field_start state
-do_parse(<<32,Rest/binary>>,S = #ecsv{state=field_start,current_field=Field})->
-    do_parse(Rest,S#ecsv{current_field=[32|Field]});
+do_parse(<<$\s,Rest/binary>>,S = #ecsv{state=field_start,current_field=Field,columns=Cols})->
+    do_parse(Rest,S#ecsv{current_field=[$\s|Field],columns=Cols+1});
+
+do_parse(<<$\t,Rest/binary>>,S = #ecsv{state=field_start,current_field=Field,columns=Cols})->
+    do_parse(Rest,S#ecsv{current_field=[$\t|Field], columns=Cols+1});
 
 %%its a quoted field, discard previous whitespaces
-do_parse(<<$",Rest/binary>>,S = #ecsv{state=field_start})-> %>>) ->
-do_parse(Rest,S#ecsv{state=quoted,current_field=[]});
+do_parse(<<$",Rest/binary>>,S = #ecsv{state=field_start,columns=Cols})->
+    do_parse(Rest,S#ecsv{state=quoted,current_field=[],columns=Cols+1});
 
 %%anything else, is a unquoted field
-          do_parse(Bin,S = #ecsv{state=field_start})->
-                 do_parse(Bin,S#ecsv{state=normal});
+do_parse(Bin,S = #ecsv{state=field_start})->
+    do_parse(Bin,S#ecsv{state=normal});
 
 %% ——— Quoted state ———————
 %%Escaped quote inside a quoted field
-do_parse(<<$",$",Rest/binary>>,S = #ecsv{state=quoted,current_field=Field})-> % ">>) ->
-    do_parse(Rest,S#ecsv{current_field=[$"|Field]});
+do_parse(<<$",$",Rest/binary>>,S = #ecsv{state=quoted,current_field=Field,columns=Cols})->
+    do_parse(Rest,S#ecsv{current_field=[$"|Field],columns=Cols+2});
 
 %%End of quoted field
-do_parse(<<$",Rest/binary>>,S = #ecsv{state=quoted})->  %">>)->
-    do_parse(Rest,S#ecsv{state=post_quoted});
+do_parse(<<$",Rest/binary>>,S = #ecsv{state=quoted,columns=Cols})->
+    do_parse(Rest,S#ecsv{state=post_quoted,columns=Cols+1});
 
 %%Anything else inside a quoted field
-do_parse(<<X,Rest/binary>>,S = #ecsv{state=quoted,current_field=Field})->
-    do_parse(Rest,S#ecsv{current_field=[X|Field]});
+do_parse(<<X,Rest/binary>>,S = #ecsv{state=quoted,current_field=Field,columns=Cols})->
+    do_parse(Rest,S#ecsv{current_field=[X|Field],columns=Cols+1});
 
-do_parse(<<>>, #ecsv{state=quoted})->
-    throw({ecsv_exception,unclosed_quote});
+do_parse(<<>>, #ecsv{state=quoted,columns=Cols,lines=Lines})->
+    throw({ecsv_exception,unclosed_quote, Lines, Cols});
 
 %% ——— Post_quoted state ———————
 %%consume whitespaces after a quoted field
-do_parse(<<32,Rest/binary>>,S = #ecsv{state=post_quoted})->
-    do_parse(Rest,S);
+do_parse(<<$\s,Rest/binary>>,S = #ecsv{state=post_quoted,columns=Cols})->
+    do_parse(Rest,S#ecsv{columns=Cols+1});
+do_parse(<<$\t,Rest/binary>>,S = #ecsv{state=post_quoted,columns=Cols})->
+    do_parse(Rest,S#ecsv{columns=Cols+1});
 
 %%———Comma and New line handling. ——————
 %%———Common code for post_quoted and normal state—
@@ -96,36 +103,38 @@ do_parse(<<$\r,Rest/binary>>,S = #ecsv{}) ->
 do_parse(<<$\n,Rest/binary>>,S = #ecsv{}) ->
     do_parse(Rest,new_record(S));
 
-do_parse(<<$, ,Rest/binary>>,S = #ecsv{current_field=Field,current_record=Record})->
+do_parse(<<$, ,Rest/binary>>,S = #ecsv{current_field=Field,current_record=Record,columns=Cols})->
     do_parse(Rest,S#ecsv{state=field_start,
                          current_field=[],
+                         columns=Cols+1,
                          current_record=[lists:reverse(Field)|Record]});
 
 %%A double quote in any other place than the already managed is an error
-do_parse(<<$",_Rest/binary>>, #ecsv{})-> %">>)->
-    throw({ecsv_exception,bad_record});
+do_parse(<<$",_Rest/binary>>, #ecsv{lines=Lines,columns=Cols})->
+    throw({ecsv_exception,bad_record,Lines,Cols});
 
 %%Anything other than whitespace or line ends in post_quoted state is an error
-do_parse(<<_X,_Rest/binary>>, #ecsv{state=post_quoted})->
-    throw({ecsv_exception,bad_record});
+do_parse(<<_X,_Rest/binary>>, #ecsv{state=post_quoted,lines=Lines,columns=Cols})->
+    throw({ecsv_exception,bad_record,Lines,Cols});
 
 %%Accumulate Field value
-do_parse(<<X,Rest/binary>>,S = #ecsv{state=normal,current_field=Field})->
-    do_parse(Rest,S#ecsv{current_field=[X|Field]}).
+do_parse(<<X,Rest/binary>>,S = #ecsv{state=normal,current_field=Field,columns=Cols})->
+    do_parse(Rest,S#ecsv{current_field=[X|Field],columns=Cols+1}).
 
 %%check the record size against the previous, and actualize state.
-new_record(S=#ecsv{cols=Cols,current_field=Field,current_record=Record,fold_state=State,fold_fun=Fun}) ->
-    % RecList = [xmerl_ucs:from_utf8(X) || X <- [lists:reverse(Field)|Record]],
+new_record(S=#ecsv{cols=Cols,current_field=Field,current_record=Record,
+                   fold_state=State,fold_fun=Fun,lines=Lines}) ->
     RecList = [lists:reverse(Field)|Record],
     NewRecord = list_to_tuple(lists:reverse(RecList)),
     if
         (tuple_size(NewRecord) =:= Cols) or (Cols =:= undefined) ->
             NewState = Fun(State,NewRecord),
             S#ecsv{state=field_start,cols=tuple_size(NewRecord),
+                   lines=Lines+1, columns=0,
                    current_record=[],current_field=[],fold_state=NewState};
 
         (tuple_size(NewRecord) =/= Cols) ->
-            throw({ecsv_exception,bad_record_size})
+            throw({ecsv_exception,bad_record_size, Lines, Cols})
     end.
 
 %% ——– Regression tests ————————
@@ -134,45 +143,45 @@ new_record(S=#ecsv{cols=Cols,current_field=Field,current_record=Record,fold_stat
 -ifndef(NOTEST).
 -include_lib("eunit/include/eunit.hrl").
 
-csv_test_() ->
-    [% empty binary
-     ?_assertEqual([], parse(<<>>)),
-     % Unix LF
-     ?_assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
-                   parse(<<"1A,1B,1C\n2A,2B,2C">>)),
-     % Unix LF with extra spaces after quoted element stripped
-     ?_assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
-                   parse(<<"\"1A\"   ,\"1B\" ,\"1C\"",10,"\"2A\" ,\"2B\",\"2C\"">>)),
-     % Unix LF with extra spaces preserved in unquoted element
-     ?_assertEqual([{" 1A ","1B","1C"},{"2A","2B","2C"}],
-                   parse(<<" 1A ,1B,1C\n2A,2B,2C">>)),
-     % Pre Mac OSX 10 CR
-     ?_assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
-                   parse(<<"1A,1B,1C\r2A,2B,2C">>)),
-     % Windows CRLF
-     ?_assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
-                   parse(<<"1A,1B,1C\r\n2A,2B,2C">>)),
-     % Quoted element
-     ?_assertEqual([{"1A","1B"}],
-                   parse(<<"1A,1B">>)),
-     % Nested quoted element
-     ?_assertEqual([{"1A","\"1B\""}],
-                   parse(<<"\"1A\",\"\"\"1B\"\"\"">>)),
-     % Quoted element with embedded LF
-     ?_assertEqual([{"1A","1\nB"}],
-                   parse(<<"\"1A\",\"1\nB\"">>)),
-     % Quoted element with embedded quotes (1)
-     ?_assertEqual([{"1A","\"B"}],
-                   parse(<<"\"1A\",","\"\"B\"">>)),
-     % Quoted element with embedded quotes (2)
-     ?_assertEqual([{"1A","blah\"B"}],
-                   parse(<<"\"1A\",\"blah\"",$","B\"">>)), %"
-     % Missing 2nd quote
-     ?_assertThrow({ecsv_exception,unclosed_quote},
-                   parse(<<"\"1A\",\"2B">>)), %">>)), % fixing indenting
-     % Bad record size
-     ?_assertThrow({ecsv_exception,bad_record_size},
-                   parse(<<"1A,1B,1C\n2A,2B\n">>))
-    ].
+csv_test() ->
+    %% empty binary
+    ?assertEqual([], parse(<<>>)),
+    %% Unix LF
+    ?assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
+                 parse(<<"1A,1B,1C\n2A,2B,2C">>)),
+    %% Unix LF with extra spaces after quoted element stripped
+    ?assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
+                 parse(<<"\"1A\"   ,\"1B\" ,\"1C\"",10,"\"2A\" ,\"2B\",\"2C\"">>)),
+    %% Unix LF with extra spaces preserved in unquoted element
+    ?assertEqual([{" 1A ","1B","1C"},{"2A","2B","2C"}],
+                 parse(<<" 1A ,1B,1C\n2A,2B,2C">>)),
+    %% Pre Mac OSX 10 CR
+    ?assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
+                 parse(<<"1A,1B,1C\r2A,2B,2C">>)),
+    %% Windows CRLF
+    ?assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
+                 parse(<<"1A,1B,1C\r\n2A,2B,2C">>)),
+
+    %% Quoted element
+    ?assertEqual([{"1A","1B"}],
+                 parse(<<"1A,1B">>)),
+    %% Nested quoted element
+    ?assertEqual([{"1A","\"1B\""}],
+                 parse(<<"\"1A\",\"\"\"1B\"\"\"">>)),
+    %% Quoted element with embedded LF
+    ?assertEqual([{"1A","1\nB"}],
+                 parse(<<"\"1A\",\"1\nB\"">>)),
+    %% Quoted element with embedded quotes (1)
+    ?assertThrow({ecsv_exception,bad_record,0,7},
+                 parse(<<"\"1A\",","\"\"B\"">>)),
+    %% Quoted element with embedded quotes (2)
+    ?assertEqual([{"1A","blah\"B"}],
+                 parse(<<"\"1A\",\"blah\"",$","B\"">>)), %"
+    %% Missing 2nd quote
+    ?assertThrow({ecsv_exception,unclosed_quote,0,8},
+                 parse(<<"\"1A\",\"2B">>)),
+    %% Bad record size
+    ?assertThrow({ecsv_exception,bad_record_size, _, _},
+                 parse(<<"1A,1B,1C\n2A,2B\n">>)).
 
 -endif.
