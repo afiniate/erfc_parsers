@@ -5,4 +5,6 @@
   {vsn, "0.0.1"},
   {modules, []},
   {registered, []},
-  {applications, [kernel, stdlib]}]}.
+  {dep_constraints,
+   [{erlware_commons, "0.6.0", gte}]},
+  {applications, [kernel, stdlib, erlware_commons]}]}.

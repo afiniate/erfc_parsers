@@ -13,34 +13,100 @@
 
 -module(erfc_4180).
 
--export([parse_file/3,parse_file/1,parse/3,parse/1]).
+-export([parse_file/4,parse_file/2,parse/4,parse/2]).
 
 -record(ecsv,{
           state = field_start, % field_start|normal|quoted|post_quoted
           cols = undefined,    % how many fields per record
+          col = 1, % current col in record
           current_field  = [],
           current_record = [],
           lines=0,
           columns=0,
+          type_specs=undefined,
           fold_state,
           fold_fun             % user supplied fold function
          }).
 
 %% ——— Exported ——————————
-parse_file(FileName,InitialState,Fun) ->
+parse_file(FileName,InitialState,Fun,Opts) ->
     {ok, Binary} = file:read_file(FileName),
-    parse(Binary,InitialState,Fun).
+    parse(Binary,InitialState,Fun,Opts).
 
-parse_file(FileName) ->
+parse_file(FileName,Opts) ->
     {ok, Binary} = file:read_file(FileName),
-    parse(Binary).
+    parse(Binary,Opts).
 
-parse(Binary) ->
-    R = parse(Binary,[],fun(Fold,Record) -> [Record|Fold] end),
+parse(Binary, Opts) ->
+    R = parse(Binary,[],fun(Fold,Record) -> [Record|Fold] end,Opts),
     lists:reverse(R).
 
-parse(Binary,InitialState,Fun) ->
-    do_parse(Binary,#ecsv{fold_state=InitialState,fold_fun=Fun}).
+parse(Binary,InitialState,Fun,Opts) ->
+    do_parse(Binary,#ecsv{fold_state=InitialState,fold_fun=Fun,
+                          type_specs=create_converters(1, Opts, [])}).
+
+%% ——— Converters ———————
+create_converters(C, [{C, Type} | Rest], Converter) ->
+    create_converters(C + 1, Rest, [create_converter(Type) | Converter]);
+create_converters(C, All=[{IC, _} | _], Converters) when C < IC ->
+    create_converters(C + 1, All, [fun default_converter/1 | Converters]);
+create_converters(C, [{IC, _} | _Rest], _Converters) when C > IC ->
+    erlang:throw({?MODULE, invalid_type_spec});
+create_converters(_, [], Converters) ->
+    erlang:list_to_tuple(lists:reverse(Converters)).
+
+default_converter(String) ->
+    String.
+
+create_converter(existing_atom) ->
+    fun(Atom) ->
+            erlang:list_to_existing_atom(Atom)
+    end;
+create_converter(atom) ->
+    fun(Atom) ->
+            erlang:list_to_atom(Atom)
+    end;
+create_converter(integer) ->
+    fun([]) ->
+            0;
+       (Int) ->
+            erlang:list_to_integer(string:strip(Int))
+    end;
+create_converter(currency) ->
+    fun([]) ->
+            0.0;
+       (Float0) ->
+            Float1 =
+                lists:filter(fun($.) ->
+                                     true;
+                                ($-) ->
+                                     true;
+                                (Char) when Char >= $0 andalso Char =< $9 ->
+                                     true;
+                                (_) ->
+                                     false
+                             end, Float0),
+            erlang:list_to_float(string:strip(Float1))
+    end;
+create_converter(float) ->
+    fun([]) ->
+            0.0;
+       (Float) ->
+            erlang:list_to_float(string:strip(Float))
+    end;
+create_converter(string) ->
+    fun(String) ->
+           String
+    end;
+create_converter(date) ->
+    fun(String) ->
+            ec_date:parse(String)
+    end.
+
+convert(Index, Element, Converters) when Index =< erlang:size(Converters) ->
+    (erlang:element(Index, Converters))(Element);
+convert(_, Element, _) ->
+    default_converter(Element).
 
 %% ——— Field_start state ———————
 %%whitespace, loop in field_start state
@@ -103,11 +169,15 @@ do_parse(<<$\r,Rest/binary>>,S = #ecsv{}) ->
 do_parse(<<$\n,Rest/binary>>,S = #ecsv{}) ->
     do_parse(Rest,new_record(S));
 
-do_parse(<<$, ,Rest/binary>>,S = #ecsv{current_field=Field,current_record=Record,columns=Cols})->
+do_parse(<<$, ,Rest/binary>>,S = #ecsv{current_field=Field,col=Col,
+                                       current_record=Record,columns=Cols,
+                                       type_specs=Specs})->
     do_parse(Rest,S#ecsv{state=field_start,
                          current_field=[],
+                         col=Col+1,
                          columns=Cols+1,
-                         current_record=[lists:reverse(Field)|Record]});
+                         current_record=[convert(Col, lists:reverse(Field), Specs) |
+                                         Record]});
 
 %%A double quote in any other place than the already managed is an error
 do_parse(<<$",_Rest/binary>>, #ecsv{lines=Lines,columns=Cols})->
@@ -130,7 +200,7 @@ new_record(S=#ecsv{cols=Cols,current_field=Field,current_record=Record,
         (tuple_size(NewRecord) =:= Cols) or (Cols =:= undefined) ->
             NewState = Fun(State,NewRecord),
             S#ecsv{state=field_start,cols=tuple_size(NewRecord),
-                   lines=Lines+1, columns=0,
+                   lines=Lines+1, columns=0,col=1,
                    current_record=[],current_field=[],fold_state=NewState};
 
         (tuple_size(NewRecord) =/= Cols) ->
@@ -145,43 +215,43 @@ new_record(S=#ecsv{cols=Cols,current_field=Field,current_record=Record,
 
 csv_test() ->
     %% empty binary
-    ?assertEqual([], parse(<<>>)),
+    ?assertEqual([], parse(<<>>, [])),
     %% Unix LF
     ?assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
-                 parse(<<"1A,1B,1C\n2A,2B,2C">>)),
+                 parse(<<"1A,1B,1C\n2A,2B,2C">>, [])),
     %% Unix LF with extra spaces after quoted element stripped
     ?assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
-                 parse(<<"\"1A\"   ,\"1B\" ,\"1C\"",10,"\"2A\" ,\"2B\",\"2C\"">>)),
+                 parse(<<"\"1A\"   ,\"1B\" ,\"1C\"",10,"\"2A\" ,\"2B\",\"2C\"">>, [])),
     %% Unix LF with extra spaces preserved in unquoted element
     ?assertEqual([{" 1A ","1B","1C"},{"2A","2B","2C"}],
-                 parse(<<" 1A ,1B,1C\n2A,2B,2C">>)),
+                 parse(<<" 1A ,1B,1C\n2A,2B,2C">>, [])),
     %% Pre Mac OSX 10 CR
     ?assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
-                 parse(<<"1A,1B,1C\r2A,2B,2C">>)),
+                 parse(<<"1A,1B,1C\r2A,2B,2C">>, [])),
     %% Windows CRLF
     ?assertEqual([{"1A","1B","1C"},{"2A","2B","2C"}],
-                 parse(<<"1A,1B,1C\r\n2A,2B,2C">>)),
+                 parse(<<"1A,1B,1C\r\n2A,2B,2C">>, [])),
 
     %% Quoted element
     ?assertEqual([{"1A","1B"}],
-                 parse(<<"1A,1B">>)),
+                 parse(<<"1A,1B">>, [])),
     %% Nested quoted element
     ?assertEqual([{"1A","\"1B\""}],
-                 parse(<<"\"1A\",\"\"\"1B\"\"\"">>)),
+                 parse(<<"\"1A\",\"\"\"1B\"\"\"">>, [])),
     %% Quoted element with embedded LF
     ?assertEqual([{"1A","1\nB"}],
-                 parse(<<"\"1A\",\"1\nB\"">>)),
+                 parse(<<"\"1A\",\"1\nB\"">>, [])),
     %% Quoted element with embedded quotes (1)
     ?assertThrow({ecsv_exception,bad_record,0,7},
-                 parse(<<"\"1A\",","\"\"B\"">>)),
+                 parse(<<"\"1A\",","\"\"B\"">>, [])),
     %% Quoted element with embedded quotes (2)
     ?assertEqual([{"1A","blah\"B"}],
-                 parse(<<"\"1A\",\"blah\"",$","B\"">>)), %"
+                 parse(<<"\"1A\",\"blah\"",$","B\"">>, [])), %"
     %% Missing 2nd quote
     ?assertThrow({ecsv_exception,unclosed_quote,0,8},
-                 parse(<<"\"1A\",\"2B">>)),
+                 parse(<<"\"1A\",\"2B">>, [])),
     %% Bad record size
     ?assertThrow({ecsv_exception,bad_record_size, _, _},
-                 parse(<<"1A,1B,1C\n2A,2B\n">>)).
+                 parse(<<"1A,1B,1C\n2A,2B\n">>, [])).
 
 -endif.
