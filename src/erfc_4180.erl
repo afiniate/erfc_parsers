@@ -42,8 +42,13 @@ parse(Binary, Opts) ->
     lists:reverse(R).
 
 parse(Binary,InitialState,Fun,Opts) ->
+    TypeSpecs = create_converters(1,
+                                  lists:sort(fun(A, B) ->
+                                                     element(1, A) <
+                                                         element(1, B)
+                                             end, Opts), []),
     do_parse(Binary,#ecsv{fold_state=InitialState,fold_fun=Fun,
-                          type_specs=create_converters(1, Opts, [])}).
+                          type_specs=TypeSpecs}).
 
 %% ——— Converters ———————
 create_converters(C, [{C, Type} | Rest], Converter) ->
